@@ -1,4 +1,3 @@
 venv/
 data/pubmed_abstracts.jsonl
-data/vocab.txt
 data/sentences.txt
