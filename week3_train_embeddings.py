@@ -70,7 +70,7 @@ except ImportError:
 
 # ── Config ────────────────────────────────────────────────────────────────────
 SENTENCES_FILE  = "data/sentences.txt"
-VOCAB_FILE      = "data/vocab.txt"   # set to None to skip vocab filter
+VOCAB_FILE      = "data/vocab_clean.txt"   # set to None to skip vocab filter
 MODEL_DIR       = "models"
 OUTPUT_DIR      = "outputs"
 
@@ -81,7 +81,7 @@ MIN_COUNT    = 10       # Second gate after vocab_clean filtering. Raises from 5
                         # to 10 to prune borderline-rare tokens during training.
                         # Set to 1 if VOCAB_FILE is set (vocab already cleaned).
 WORKERS      = min(os.cpu_count() or 4, 8)   # RAM fix 1: cap at 8
-EPOCHS       = 20
+EPOCHS       = 12
 SG           = 1        # Skip-gram
 NEGATIVE     = 10
 SAMPLE       = 1e-4     # Subsampling threshold for frequent words
@@ -148,8 +148,21 @@ class CorpusReader:
 
     def __len__(self) -> int:
         if self._len is None:
-            with open(self.path, "rb") as f:
-                self._len = sum(1 for _ in f)
+        # Count only non-empty lines to match __iter__ behaviour
+            count = 0
+            vs = self.vocab_set
+            with open(self.path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if vs is not None:
+                        tokens = [t for t in line.split() if t in vs]
+                    else:
+                        tokens = line.split()
+                    if tokens:
+                        count += 1
+            self._len = count
         return self._len
 
 
@@ -225,10 +238,6 @@ def train_model(sentences_path: str, vocab_path: str | None) -> Word2Vec:
 
     # RAM fix 4: drop the output weight matrix — only needed during training.
     # For 80k vocab × 200 dim this frees ~64 MB before evaluation and saving.
-    if hasattr(model, "syn1neg"):
-        del model.syn1neg
-        gc.collect()
-        print(f"\n  syn1neg freed  {_mem()}")
 
     return model
 
@@ -344,13 +353,13 @@ def save_outputs(model: Word2Vec, report: str) -> None:
     kv_path     = Path(MODEL_DIR) / "medical_word2vec.kv"
     report_path = Path(OUTPUT_DIR) / "embedding_eval.txt"
 
-    # Save full model (needed if you want to resume training later)
-    model.save(str(model_path))
+# Save BEFORE deleting syn1neg — move the del to after both saves
+    model.save(str(model_path))      # needs syn1neg intact for full model
+    model.wv.save(str(kv_path))      # only needs wv, syn1neg not required
 
-    # Save KeyedVectors only — this is what downstream code needs.
-    # RAM fix 3: KV file does NOT include syn1neg (already deleted above),
-    # so it's half the size of the full model on disk.
-    model.wv.save(str(kv_path))
+    # Then free syn1neg
+    if hasattr(model, "syn1neg"):
+        del model.syn1neg
 
     report_path.write_text(report, encoding="utf-8")
 

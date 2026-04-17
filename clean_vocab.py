@@ -112,6 +112,23 @@ HARD_KEEP = {
     "cytotoxicity", "genotoxicity", "immunotoxicity",
     "contraindication", "coadministration", "comedication",
     "polypharmacy", "multimorbidity", "comorbidity",
+    # forced DDI phrases — joined by apply_forced_phrases() in week2_preprocess.py
+    # must be in HARD_KEEP so clean_vocab.py doesn't decompose and reject them
+    "cytochrome_p450",
+    "drug_drug_interaction",
+    "adverse_drug_reaction",
+    "drug_induced_liver_injury",
+    "blood_brain_barrier",
+    "first_pass_metabolism",
+    "half_life",
+    "dose_dependent",
+    "steady_state",
+    "peak_trough",
+    "narrow_therapeutic_index",
+    "therapeutic_drug_monitoring",
+    "pharmacokinetic_pharmacodynamic",
+    # cytochrome alone is also useful
+    "cytochrome",
 }
 
 # ── Medical drug/disease suffixes — token ending in these is kept ─────────────

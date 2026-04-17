@@ -223,6 +223,41 @@ _HAS_DIGIT  = re.compile(r"\d")
 _PURE_ALPHA = re.compile(r"^[a-z]+$")
 _VOWELS     = set("aeiou")
 
+# ── Forced phrase joins ───────────────────────────────────────────────────────
+# Applied inside clean_text() BEFORE tokenization. These are DDI-critical
+# multi-word terms that the bigram model misses because their component words
+# are individually very common (low PMI score despite meaningful co-occurrence).
+# Longest surface forms first to prevent partial matches.
+FORCED_PHRASES = [
+    ("pharmacokinetic pharmacodynamic",     "pharmacokinetic_pharmacodynamic"),
+    ("drug induced liver injury",           "drug_induced_liver_injury"),
+    ("drug-induced liver injury",           "drug_induced_liver_injury"),
+    ("narrow therapeutic index",            "narrow_therapeutic_index"),
+    ("therapeutic drug monitoring",         "therapeutic_drug_monitoring"),
+    ("blood brain barrier",                 "blood_brain_barrier"),
+    ("blood-brain barrier",                 "blood_brain_barrier"),
+    ("adverse drug reaction",               "adverse_drug_reaction"),
+    ("drug drug interaction",               "drug_drug_interaction"),
+    ("drug-drug interaction",               "drug_drug_interaction"),
+    ("first pass metabolism",               "first_pass_metabolism"),
+    ("first-pass metabolism",               "first_pass_metabolism"),
+    ("area under the curve",                "auc"),
+    ("area under curve",                    "auc"),
+    ("cytochrome p450",                     "cytochrome_p450"),
+    ("half life",                           "half_life"),
+    ("dose dependent",                      "dose_dependent"),
+    ("steady state",                        "steady_state"),
+    ("peak trough",                         "peak_trough"),
+    ("maximum plasma concentration",        "cmax"),
+    ("minimum inhibitory concentration",    "mic"),
+]
+
+def apply_forced_phrases(text: str) -> str:
+    """Join DDI-critical multi-word terms before tokenization and bigram training."""
+    for surface, replacement in FORCED_PHRASES:
+        text = text.replace(surface, replacement)
+    return text
+
 # ── Strict regex patterns for digit-containing tokens we want to keep ─────────
 # Anything with digits that does NOT match one of these (or MEDICAL_WHITELIST)
 # is rejected. This replaces the old permissive `^[a-z]{1,}\d[a-z0-9]*$`.
@@ -337,17 +372,19 @@ def _is_valid_phrase_token(tok: str) -> bool:
 # private-use sentinel `§` so NLTK sees one token, then restore after.
 _HYPHEN_PRESERVE = re.compile(
     r'\b('
-    # CYP-anything: cyp3a4-mediated, cyp2d6-dependent, cyp-mediated
-    r'cyp[\w]*'
+    # CYP compounds: cyp3a4-mediated, cyp2d6-dependent, cyp-mediated
+    # [\w]+ matches the isoform (3a4, 2d6), then (?:-[\w]+)+ matches
+    # one or more hyphen-suffix pairs: -mediated, -dependent, -inhibited
+    r'cyp[\w]+(?:-[\w]+)+'
     # p-gp compounds: p-gp-mediated, p-gp-dependent
-    r'|p-gp'
-    # 5-HT receptor subtypes: 5-ht2a, 5-ht3
+    r'|p-gp(?:-[\w]+)*'
+    # 5-HT receptor subtypes: 5-ht2a, 5-ht1a, 5-ht3
     r'|5-ht[\w]+'
-    # IL/TNF/IFN/TGF/COX with digit suffix: il-6, tnf-a, cox-2
+    # Cytokines / biomarkers: il-6, tnf-a, cox-2, gaba-a, pd-1
     r'|(?:il|tnf|ifn|tgf|cox|gaba|pd)-[\w]+'
-    # drug-drug, drug-induced, drug-metabolizing, drug-transporter
+    # drug-* compounds: drug-drug, drug-induced, drug-metabolizing
     r'|drug-[\w]+'
-    # dose-*, mechanism-*, first-*, protein-*, half-*, non-*, rate-*, peak-*
+    # General hyphenated DDI adjectives
     r'|(?:dose|mechanism|first|protein|half|non|rate|peak|steady|narrow|wide'
     r'|enzyme|substrate|receptor|carrier|active|efflux|anti|double|placebo'
     r'|cross|well|long|short|follow|self|health|disease|cancer|hospital'
@@ -360,19 +397,28 @@ _SENTINEL = "§"
 
 def clean_text(text: str) -> str:
     text = text.lower()
+    text = apply_forced_phrases(text)   # join DDI phrases before anything is stripped
     text = re.sub(r"\b[pnrtz]\s*[=<>]\s*[\d\.]+", "", text)
     text = re.sub(r"\[\d+\]|\(\w[\w\s,\.]+\d{4}\w?\)", "", text)
     text = text.encode("ascii", errors="ignore").decode()
-    text = re.sub(r"[^\w\s\-]", " ", text)
+    # Preserve hyphens (\-) AND sentinel (§) — sentinel is written by
+    # tokenize_sentence AFTER this call, but clean_text must not strip it
+    # if called again on already-sentineled text.
+    text = re.sub(r"[^\w\s\-§]", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
 def tokenize_sentence(sentence: str) -> list:
+    # Step 1: clean first (lowercase, strip citations, ascii-only, collapse spaces)
     text = clean_text(sentence)
 
-    # Encode hyphens inside preserved compounds so word_tokenize sees one token.
-    # e.g. "cyp3a4-mediated" -> "cyp3a4§mediated", tokenized as one piece,
-    # then restored to "cyp3a4-mediated" before the junk filter runs.
+    # Step 2: protect hyphenated DDI compounds AFTER clean_text.
+    # Root cause of the bug: previously _HYPHEN_PRESERVE ran before clean_text,
+    # so clean_text's `[^\w\s\-]` regex stripped the § sentinel immediately.
+    # Now: clean_text runs first (§ not yet present), then we sentinel-encode,
+    # then word_tokenize sees the compound as one token, then we restore.
+    # e.g. "cyp3a4-mediated" → "cyp3a4§mediated" → tokenized intact
+    #      → restored to "cyp3a4-mediated" → passes _is_junk as a unit.
     def _protect(m):
         return m.group(0).replace("-", _SENTINEL)
 
@@ -575,6 +621,17 @@ def quick_test() -> None:
          "(expect empty — all alphanumeric codes)"),
         ("The a1_a2 a3_a4 _node a2b5 segment was removed.",
          "(expect: segment removed — rest is junk)"),
+        # ── forced phrase joining ──
+        ("The drug drug interaction between warfarin and aspirin is well documented.",
+         "drug_drug_interaction warfarin aspirin documented"),
+        ("Half life of metformin is approximately 6 hours.",
+         "half_life metformin approximately hours"),
+        ("Steady state concentrations were reached after 5 days.",
+         "steady_state concentrations reached days"),
+        ("Blood brain barrier penetration limits CNS drug delivery.",
+         "blood_brain_barrier penetration limits drug delivery"),
+        ("Cytochrome P450 enzymes mediate oxidative metabolism.",
+         "cytochrome_p450 enzymes mediate oxidative metabolism"),
     ]
     print("=== Tokenizer quick test ===")
     for sent, expected in test_cases:
