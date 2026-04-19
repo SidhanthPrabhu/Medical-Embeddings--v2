@@ -81,7 +81,7 @@ MIN_COUNT    = 10       # Second gate after vocab_clean filtering. Raises from 5
                         # to 10 to prune borderline-rare tokens during training.
                         # Set to 1 if VOCAB_FILE is set (vocab already cleaned).
 WORKERS      = min(os.cpu_count() or 4, 8)   # RAM fix 1: cap at 8
-EPOCHS       = 12
+EPOCHS       = 20
 SG           = 1        # Skip-gram
 NEGATIVE     = 10
 SAMPLE       = 1e-4     # Subsampling threshold for frequent words
@@ -148,7 +148,10 @@ class CorpusReader:
 
     def __len__(self) -> int:
         if self._len is None:
-        # Count only non-empty lines to match __iter__ behaviour
+            # Count only lines that __iter__ would actually yield —
+            # i.e. non-empty after vocab filtering. This eliminates the
+            # "supplied example count did not equal expected count" warning
+            # which caused Gensim's LR schedule to decay incorrectly.
             count = 0
             vs = self.vocab_set
             with open(self.path, encoding="utf-8") as f:
@@ -156,10 +159,9 @@ class CorpusReader:
                     line = line.strip()
                     if not line:
                         continue
+                    tokens = line.split()
                     if vs is not None:
-                        tokens = [t for t in line.split() if t in vs]
-                    else:
-                        tokens = line.split()
+                        tokens = [t for t in tokens if t in vs]
                     if tokens:
                         count += 1
             self._len = count
@@ -236,8 +238,8 @@ def train_model(sentences_path: str, vocab_path: str | None) -> Word2Vec:
         callbacks      = [logger],
     )
 
-    # RAM fix 4: drop the output weight matrix — only needed during training.
-    # For 80k vocab × 200 dim this frees ~64 MB before evaluation and saving.
+    # NOTE: do NOT delete syn1neg here — model.save() needs it intact.
+    # It is deleted inside save_outputs() after both files are written.
 
     return model
 
@@ -353,15 +355,22 @@ def save_outputs(model: Word2Vec, report: str) -> None:
     kv_path     = Path(MODEL_DIR) / "medical_word2vec.kv"
     report_path = Path(OUTPUT_DIR) / "embedding_eval.txt"
 
-# Save BEFORE deleting syn1neg — move the del to after both saves
-    model.save(str(model_path))      # needs syn1neg intact for full model
-    model.wv.save(str(kv_path))      # only needs wv, syn1neg not required
+    # Save full model FIRST — model.save() needs syn1neg intact.
+    # Saving before deletion is the fix for the 3.4 MB file size bug:
+    # previously syn1neg was deleted in train_model() before save_outputs()
+    # ran, so model.save() wrote a shell with no weight matrices.
+    model.save(str(model_path))
 
-    # Then free syn1neg
-    if hasattr(model, "syn1neg"):
-        del model.syn1neg
+    # Save KeyedVectors — this is what downstream DDI code loads.
+    # Does not require syn1neg.
+    model.wv.save(str(kv_path))
 
     report_path.write_text(report, encoding="utf-8")
+
+    # NOW free syn1neg — both files are safely written.
+    if hasattr(model, "syn1neg"):
+        del model.syn1neg
+        gc.collect()
 
     sizes = {
         p.name: f"{p.stat().st_size / 1e6:.1f} MB"
@@ -372,6 +381,7 @@ def save_outputs(model: Word2Vec, report: str) -> None:
     for name, size in sizes.items():
         print(f"  {name:<40} {size}")
     print(f"\n  → Use '{kv_path}' for downstream DDI modelling.")
+    print(f"  Expected sizes: model ~130 MB, kv ~65 MB")
 
 
 if __name__ == "__main__":

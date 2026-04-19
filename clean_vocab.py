@@ -88,6 +88,9 @@ HARD_KEEP = {
     "drug-drug", "drug-induced", "drug-metabolizing",
     "p-gp-mediated", "efflux-mediated", "receptor-mediated",
     "dose-response", "half-life", "steady-state",
+    "non-linear", "dose-limiting", "rate-limiting", "time-dependent",
+    "concentration-dependent", "narrow-therapeutic", "first-pass",
+    "protein-bound", "mechanism-based", "active-site",
     # kinases / signalling (short forms not in ENGLISH_WORDS)
     "pkc", "pka", "jak", "mek", "erk", "akt", "ros", "nos", "pde",
     "src", "abl", "gpcr",
@@ -106,6 +109,63 @@ HARD_KEEP = {
     # other common drugs
     "metformin", "aspirin", "ibuprofen", "warfarin", "heparin",
     "morphine", "codeine", "digoxin", "lithium", "insulin",
+    # antiepileptics — major CYP inducers, critical for DDI
+    "phenytoin", "carbamazepine", "phenobarbital", "valproate", "valproic",
+    "lamotrigine", "levetiracetam", "topiramate", "oxcarbazepine",
+    # antiarrhythmics — narrow therapeutic index, DDI-critical
+    "amiodarone", "dronedarone", "quinidine", "flecainide", "propafenone",
+    "sotalol", "verapamil", "diltiazem",
+    # antiplatelet / anticoagulant
+    "clopidogrel", "ticagrelor", "prasugrel", "dabigatran", "apixaban",
+    "rivaroxaban", "edoxaban", "enoxaparin",
+    # antibiotics (beyond macrolides already listed)
+    "rifampicin", "rifampin", "ciprofloxacin", "levofloxacin", "doxycycline",
+    "metronidazole", "trimethoprim", "sulfamethoxazole", "linezolid",
+    # antidepressants / antipsychotics — CYP2D6 substrates/inhibitors
+    "fluoxetine", "paroxetine", "sertraline", "citalopram", "escitalopram",
+    "venlafaxine", "duloxetine", "bupropion", "nortriptyline", "amitriptyline",
+    "haloperidol", "risperidone", "olanzapine", "quetiapine", "clozapine",
+    "aripiprazole",
+    # immunosuppressants — narrow therapeutic index
+    "cyclosporine", "tacrolimus", "sirolimus", "everolimus", "mycophenolate",
+    # proton pump inhibitors — CYP2C19 substrates
+    "omeprazole", "lansoprazole", "pantoprazole", "esomeprazole", "rabeprazole",
+    # H2 blockers / antifungals
+    "cimetidine", "ranitidine", "famotidine",
+    # other common DDI perpetrators
+    "rifabutin", "nefazodone", "mibefradil", "gemfibrozil",
+    "cholestyramine", "colestipol", "sucralfate",
+    # beta blockers (CYP2D6)
+    "metoprolol", "propranolol", "carvedilol", "bisoprolol", "atenolol",
+    "timolol", "nebivolol",
+    # calcium channel blockers
+    "amlodipine", "nifedipine", "felodipine", "nisoldipine", "isradipine",
+    # ACE inhibitors / ARBs
+    "enalapril", "lisinopril", "ramipril", "captopril", "benazepril",
+    "losartan", "candesartan", "irbesartan", "olmesartan", "telmisartan",
+    # diabetes drugs
+    "glipizide", "glyburide", "glimepiride", "pioglitazone", "rosiglitazone",
+    "sitagliptin", "saxagliptin", "alogliptin", "linagliptin",
+    "exenatide", "liraglutide", "canagliflozin", "dapagliflozin", "empagliflozin",
+    # opioids
+    "fentanyl", "oxycodone", "hydrocodone", "tramadol", "buprenorphine",
+    "methadone", "naloxone", "naltrexone",
+    # benzodiazepines / sedatives
+    "midazolam", "triazolam", "alprazolam", "diazepam", "lorazepam",
+    "clonazepam", "temazepam", "zolpidem", "zaleplon",
+    # chemotherapy agents
+    "imatinib", "dasatinib", "nilotinib", "erlotinib", "gefitinib",
+    "sorafenib", "sunitinib", "pazopanib", "lapatinib", "crizotinib",
+    "vemurafenib", "dabrafenib", "trametinib", "ibrutinib", "idelalisib",
+    "venetoclax", "palbociclib", "ribociclib", "abemaciclib",
+    "docetaxel", "paclitaxel", "vincristine", "vinblastine",
+    "cyclophosphamide", "ifosfamide", "busulfan", "melphalan",
+    "doxorubicin", "epirubicin", "idarubicin",
+    "methotrexate", "capecitabine", "gemcitabine", "fluorouracil",
+    "irinotecan", "topotecan", "etoposide",
+    # 5-HT3 antagonist phrases
+    "5-ht3_receptor_antagonists", "5-ht3_receptor_antagonist",
+    "5-ht2a_receptor", "5-ht2a_receptors",
     # common clinical terms not always in NLTK
     "mellitus", "pharmacokinetics", "pharmacodynamics",
     "hepatotoxicity", "nephrotoxicity", "cardiotoxicity", "neurotoxicity",

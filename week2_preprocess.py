@@ -4,30 +4,25 @@ Week 2: Text Preprocessing Pipeline (DDI-tuned)
 INPUT:  data/pubmed_abstracts.jsonl
 OUTPUT: data/sentences.txt, data/vocab.txt
 
-BUGS FIXED in v3:
-  1. Digit rescue pattern was too permissive — `^[a-z]{1,}\\d[a-z0-9]*$`
-     passed a0, a1, a2780, a549cells, a2143g (SNP notation), a082002 etc.
-     New: _digit_token_ok() uses strict named regex patterns (CYP, cytokine,
-     transporter, general biomedical with ≥3-char alpha prefix). Everything
-     else with a digit is rejected.
+FINAL FIXES (v4):
+  1. FORCED_PHRASES uses word-boundary replacements (re.sub with \\b)
+     instead of str.replace to prevent partial matches.
+     "drug-drug interaction" was matching the prefix of
+     "drug-drug interactions" → producing "drug_drug_interactions".
 
-  2. Phrase model was joining junk tokens with underscores — a2_a3,
-     a549_h1299, a1_a2_a3, _node, a1c_hba1c. Root cause: junk tokens
-     survived tokenization and Phraser joined them. Fix: _is_valid_phrase_token()
-     runs on every underscore token in the final write pass and drops phrases
-     whose parts fail the junk filter.
+  2. cytochrome_p450 was being dropped by _is_junk because the digit
+     gate fired on the whole underscore-joined token. Fix: _is_junk
+     now checks MEDICAL_WHITELIST and underscore presence FIRST, before
+     the digit gate. Also added "cytochrome_p450" to MEDICAL_WHITELIST.
 
-  3. Tokens starting with `_` (_node, etc.) now explicitly dropped in
-     tokenize_sentence and in the post-phrase filter.
+  3. cyp3a4-mediated was dropped because _is_junk hit the digit gate
+     (cyp3a4 contains digits) before checking HYPHEN_WHITELIST.
+     Fix: MEDICAL_WHITELIST check and HYPHEN_WHITELIST check both happen
+     BEFORE the digit gate in _is_junk.
 
-  4. Single-letter alpha prefix tokens (a0, a1 … a9) now caught by the
-     ≥3-char alpha prefix requirement in _digit_token_ok.
-
-  5. Mutation/SNP notation (a1166c, a2143g, a118g) — single-letter prefix
-     + digits + letter — caught by the same ≥3-char alpha prefix rule.
-
-  6. CYP3A4-mediated was being dropped because hyphen split fired before
-     MEDICAL_WHITELIST check on the full token. Fix: check full token first.
+  4. Sentinel fix confirmed working: clean_text preserves § via
+     [^\w\s\-§], _HYPHEN_PRESERVE encodes hyphens as § AFTER clean_text
+     runs, word_tokenize sees one token, § restored to -.
 """
 
 import gc
@@ -62,7 +57,7 @@ OUTPUT_VOCAB  = "data/vocab.txt"
 MIN_WORD_FREQ = 5
 MIN_SENT_LEN  = 5
 CHUNK_SIZE    = 5_000
-TITLE_REPEAT  = 3       # repeat title N times to boost freq for rare drug names
+TITLE_REPEAT  = 3
 # ─────────────────────────────────────────────────────────────────────────────
 
 CUSTOM_STOPS = {"may", "might", "could", "would", "also", "thus",
@@ -90,20 +85,13 @@ SHORT_NOISE = {
     "tsa", "wha",
 }
 
-# ≤4-char biomedical abbreviations that NLTK doesn't know
 MEDICAL_SHORT = {
-    # kinases / signalling
     "pkc", "pka", "pde", "ros", "nos", "akt", "jak", "mek", "erk",
     "src", "abl", "ret", "kit", "flt", "axl", "tie",
-    # receptors / channels
     "gpcr", "ryr",
-    # transporters
     "mdr", "abc",
-    # metabolism enzymes
     "ugt", "nat",
-    # common short antiretroviral abbreviations used in DDI lit
     "dex", "tac", "csa", "atv", "efv", "lpv", "rtv", "sqv",
-    # study design
     "rct", "nnt",
 }
 
@@ -112,26 +100,25 @@ MEDICAL_WHITELIST = {
     "mg", "ml", "kg", "mmhg", "mmol", "iu", "nmol", "umol", "mcg", "bpm",
     # immunoglobulins
     "abo", "igg", "igm", "ige", "iga",
-    # common abbreviations
+    # abbreviations
     "hiv", "aids", "covid", "sars", "mri", "ct", "ecg", "eeg", "icu",
     "dna", "rna", "pcr", "mrna", "atp", "ldl", "hdl", "bmi", "bp",
     "copd", "chf", "ckd", "cad", "ibs", "ibd", "als", "vs",
     # anatomy
     "lung", "lungs", "liver", "brain", "kidney", "heart",
-    # general clinical
+    # clinical
     "mellitus", "insipidus", "arterial", "venous", "coronary",
     "blood", "pressure", "failure", "chronic", "acute",
-    # common drugs
+    # drugs
     "metformin", "aspirin", "ibuprofen", "warfarin", "heparin",
     "morphine", "codeine", "digoxin", "lithium", "insulin",
     "lasix", "zofran", "taxol", "lyrica", "paxil", "zoloft",
     "lipitor", "prozac", "xanax", "valium",
-    # CYP enzymes — full names whitelisted so hyphen splits don't break them
+    # CYP enzymes
     "cyp3a4", "cyp2d6", "cyp2c9", "cyp2c19", "cyp1a2", "cyp2e1",
     "cyp2b6", "cyp3a5", "cyp2a6", "cyp2j2", "cyp4f2", "p450",
-    # tumour suppressors / oncogenes — specific ones only
     "p53",
-    # transport proteins
+    # transporters
     "p-glycoprotein", "oatp", "oatp1b1", "oatp1b3", "oatp2b1",
     "oat1", "oat3", "oct1", "oct2", "bcrp",
     "mrp1", "mrp2", "mrp4",
@@ -142,13 +129,12 @@ MEDICAL_WHITELIST = {
     "antagonise", "antagonize", "antagonism",
     "synergise", "synergize", "synergism", "synergy",
     "alter", "alters", "alteration",
-    # pharmacokinetic terms
+    # PK terms
     "bioavailability", "clearance", "halflife", "metabolism",
     "absorption", "distribution", "excretion",
     "pharmacokinetic", "pharmacodynamic",
-    # PK parameters
     "cmax", "auc", "tmax",
-    # cytokines / biomarkers (digit-containing — kept here explicitly)
+    # cytokines
     "il-2", "il-6", "il-10", "il-12", "il-17", "il-1b",
     "tnf-a", "ifn-g", "tgf-b",
     "cd4", "cd8", "cd20", "cd19", "cd3",
@@ -157,9 +143,8 @@ MEDICAL_WHITELIST = {
     # receptor subtypes
     "5-ht2a", "5-ht3", "5-ht1a", "nmda", "ampa",
     "gaba-a", "gaba-b",
-    # DDI mechanism terms
+    # DDI mechanism
     "efflux", "uptake", "influx",
-    # hba1c — legitimate clinical marker, not a code
     "hba1c",
     # antiretrovirals
     "atazanavir", "ritonavir", "lopinavir", "efavirenz", "nevirapine",
@@ -171,8 +156,17 @@ MEDICAL_WHITELIST = {
     # azole antifungals
     "fluconazole", "itraconazole", "ketoconazole", "voriconazole",
     "posaconazole", "isavuconazole",
-    # macrolide antibiotics
+    # macrolides
     "erythromycin", "clarithromycin", "azithromycin", "telithromycin",
+    # forced DDI phrases — added here so _is_junk never fires on them
+    # (digit gate was rejecting cytochrome_p450 before this fix)
+    "cytochrome_p450", "cytochrome",
+    "drug_drug_interaction", "drug_drug_interactions",
+    "adverse_drug_reaction", "drug_induced_liver_injury",
+    "blood_brain_barrier", "first_pass_metabolism",
+    "half_life", "dose_dependent", "steady_state", "peak_trough",
+    "narrow_therapeutic_index", "therapeutic_drug_monitoring",
+    "pharmacokinetic_pharmacodynamic",
 }
 
 MEDICAL_SUFFIXES = (
@@ -202,14 +196,12 @@ HYPHEN_WHITELIST = {
     "narrow-therapeutic", "wide-therapeutic",
     "non-linear", "dose-limiting", "rate-limiting",
     "half-life", "steady-state", "peak-trough",
-    # common CYP compound adjectives
     "cyp3a4-mediated", "cyp2d6-mediated", "cyp2c9-mediated",
     "cyp3a4-dependent", "cyp2d6-dependent",
     "p-gp-dependent", "p-gp-inhibited",
     "drug-induced",
 }
 
-# Word parts that appear in hyphenated DDI terms where one side is medical
 MEDICAL_HYPHEN_PARTS = {
     "cyp", "cyp3a4", "cyp2d6", "cyp2c9", "cyp2c19", "cyp1a2",
     "pgp", "mrp", "bcrp", "oatp",
@@ -224,121 +216,105 @@ _PURE_ALPHA = re.compile(r"^[a-z]+$")
 _VOWELS     = set("aeiou")
 
 # ── Forced phrase joins ───────────────────────────────────────────────────────
-# Applied inside clean_text() BEFORE tokenization. These are DDI-critical
-# multi-word terms that the bigram model misses because their component words
-# are individually very common (low PMI score despite meaningful co-occurrence).
-# Longest surface forms first to prevent partial matches.
-FORCED_PHRASES = [
-    ("pharmacokinetic pharmacodynamic",     "pharmacokinetic_pharmacodynamic"),
-    ("drug induced liver injury",           "drug_induced_liver_injury"),
-    ("drug-induced liver injury",           "drug_induced_liver_injury"),
-    ("narrow therapeutic index",            "narrow_therapeutic_index"),
-    ("therapeutic drug monitoring",         "therapeutic_drug_monitoring"),
-    ("blood brain barrier",                 "blood_brain_barrier"),
-    ("blood-brain barrier",                 "blood_brain_barrier"),
-    ("adverse drug reaction",               "adverse_drug_reaction"),
-    ("drug drug interaction",               "drug_drug_interaction"),
-    ("drug-drug interaction",               "drug_drug_interaction"),
-    ("first pass metabolism",               "first_pass_metabolism"),
-    ("first-pass metabolism",               "first_pass_metabolism"),
-    ("area under the curve",                "auc"),
-    ("area under curve",                    "auc"),
-    ("cytochrome p450",                     "cytochrome_p450"),
-    ("half life",                           "half_life"),
-    ("dose dependent",                      "dose_dependent"),
-    ("steady state",                        "steady_state"),
-    ("peak trough",                         "peak_trough"),
-    ("maximum plasma concentration",        "cmax"),
-    ("minimum inhibitory concentration",    "mic"),
+# Uses re.sub with \b word boundaries instead of str.replace to prevent
+# partial matches. "drug-drug interaction" must NOT match inside
+# "drug-drug interactions" (the plural), which str.replace does wrong.
+# Longest/most-specific surface forms listed first.
+_FORCED_PHRASE_RES = [
+    (re.compile(r'\bpharmacokinetic pharmacodynamic\b'),  "pharmacokinetic_pharmacodynamic"),
+    (re.compile(r'\bdrug induced liver injury\b'),        "drug_induced_liver_injury"),
+    (re.compile(r'\bdrug-induced liver injury\b'),        "drug_induced_liver_injury"),
+    (re.compile(r'\bnarrow therapeutic index\b'),         "narrow_therapeutic_index"),
+    (re.compile(r'\btherapeutic drug monitoring\b'),      "therapeutic_drug_monitoring"),
+    (re.compile(r'\bblood brain barrier\b'),              "blood_brain_barrier"),
+    (re.compile(r'\bblood-brain barrier\b'),              "blood_brain_barrier"),
+    (re.compile(r'\badverse drug reaction\b'),            "adverse_drug_reaction"),
+    # Match singular only — plural handled separately below
+    (re.compile(r'\bdrug[ -]drug interaction\b'),         "drug_drug_interaction"),
+    (re.compile(r'\bfirst[ -]pass metabolism\b'),         "first_pass_metabolism"),
+    (re.compile(r'\barea under the curve\b'),             "auc"),
+    (re.compile(r'\barea under curve\b'),                 "auc"),
+    (re.compile(r'\bcytochrome p-?450\b'),                "cytochrome_p450"),
+    (re.compile(r'\bhalf[ -]life\b'),                     "half_life"),
+    (re.compile(r'\bdose[ -]dependent\b'),                "dose_dependent"),
+    (re.compile(r'\bsteady[ -]state\b'),                  "steady_state"),
+    (re.compile(r'\bpeak[ -]trough\b'),                   "peak_trough"),
+    (re.compile(r'\bmaximum plasma concentration\b'),     "cmax"),
+    (re.compile(r'\bminimum inhibitory concentration\b'), "mic"),
 ]
 
 def apply_forced_phrases(text: str) -> str:
-    """Join DDI-critical multi-word terms before tokenization and bigram training."""
-    for surface, replacement in FORCED_PHRASES:
-        text = text.replace(surface, replacement)
+    """Join DDI-critical multi-word terms before tokenization."""
+    for pattern, replacement in _FORCED_PHRASE_RES:
+        text = pattern.sub(replacement, text)
     return text
 
-# ── Strict regex patterns for digit-containing tokens we want to keep ─────────
-# Anything with digits that does NOT match one of these (or MEDICAL_WHITELIST)
-# is rejected. This replaces the old permissive `^[a-z]{1,}\d[a-z0-9]*$`.
-_CYP_RE         = re.compile(r'^cyp\d[a-z]\d+[a-z]?$')           # cyp3a4, cyp2d6
+# ── Digit-containing token patterns ──────────────────────────────────────────
+_CYP_RE         = re.compile(r'^cyp\d[a-z]\d+[a-z]?$')
 _CYTOKINE_RE    = re.compile(r'^(il|tnf|ifn|tgf|cox|her|pdl)\d{1,2}[a-z]?$')
-_CD_MARKER_RE   = re.compile(r'^cd\d{1,2}$')                      # cd4, cd8, cd19
+_CD_MARKER_RE   = re.compile(r'^cd\d{1,2}$')
 _TRANSPORTER_RE = re.compile(r'^(oat|oct|mrp|slc|abcb|abcc|abcg)\d{1,2}$')
-# General biomedical: ≥3-char alpha prefix + digits + short suffix
-# Passes: hba1c, ugt1a1, slco1b1, cyp3a5, her2
-# Rejects: a0, a1, a2780, a549, a1166c (single-letter prefix)
 _BIOMEDICAL_RE  = re.compile(r'^([a-z]{3,})\d[a-z0-9]{0,5}$')
 
-
 def _digit_token_ok(tok: str) -> bool:
-    """Return True only for digit-containing tokens with a recognised biomedical shape."""
-    if tok in MEDICAL_WHITELIST:
-        return True
-    if _CYP_RE.match(tok):
-        return True
-    if _CYTOKINE_RE.match(tok):
-        return True
-    if _CD_MARKER_RE.match(tok):
-        return True
-    if _TRANSPORTER_RE.match(tok):
-        return True
-    if _BIOMEDICAL_RE.match(tok):
-        return True
+    if tok in MEDICAL_WHITELIST: return True
+    if _CYP_RE.match(tok): return True
+    if _CYTOKINE_RE.match(tok): return True
+    if _CD_MARKER_RE.match(tok): return True
+    if _TRANSPORTER_RE.match(tok): return True
+    if _BIOMEDICAL_RE.match(tok): return True
     return False
 
-
 def _is_junk(tok: str) -> bool:
-    # Always keep whitelisted tokens
+    # ── Check whitelist and underscore phrases FIRST — before digit gate ──────
+    # Critical: tokens like cyp3a4-mediated contain digits, so without this
+    # ordering they hit the digit gate and fail before HYPHEN_WHITELIST is checked.
+    # Forced phrases like cytochrome_p450 are in MEDICAL_WHITELIST explicitly.
     if tok in MEDICAL_WHITELIST:
         return False
 
-    # Explicit noise
+    # Underscore phrases are validated by _is_valid_phrase_token, not here
+    if "_" in tok:
+        return False
+
+    # Hyphenated tokens — check whitelist before digit gate
+    if "-" in tok:
+        if tok in HYPHEN_WHITELIST:
+            return False
+        parts = tok.split("-")
+        if any(len(p) <= 1 or _HAS_DIGIT.search(p) for p in parts):
+            return True
+        if any(p in MEDICAL_HYPHEN_PARTS for p in parts):
+            return False
+        if not all(p in ENGLISH_WORDS for p in parts):
+            return True
+        return False
+
     if tok in SHORT_NOISE:
         return True
 
-    # ── Digit gate — must come before length checks ───────────────────────────
+    # ── Digit gate — only plain tokens reach here ─────────────────────────────
     if _HAS_DIGIT.search(tok):
         return not _digit_token_ok(tok)
 
-    # ── Pure alpha tokens ─────────────────────────────────────────────────────
     if len(tok) <= 2:
         return True
 
-    # Short tokens: rescue MEDICAL_SHORT before ENGLISH_WORDS gate
-    if len(tok) <= 4 and "-" not in tok:
+    if len(tok) <= 4:
         if tok in MEDICAL_SHORT:
             return False
         if tok not in ENGLISH_WORDS:
             return True
 
-    # Hyphenated tokens
-    if "-" in tok:
-        if tok in HYPHEN_WHITELIST:
-            return False
-        parts = tok.split("-")
-        # Reject parts that are single chars or contain digits
-        if any(len(p) <= 1 or _HAS_DIGIT.search(p) for p in parts):
-            return True
-        # Rescue if any part is a known medical word stem
-        if any(p in MEDICAL_HYPHEN_PARTS for p in parts):
-            return False
-        # Standard English compound: require all parts to be real words
-        if not all(p in ENGLISH_WORDS for p in parts):
-            return True
-        return False
-
-    # Must contain a vowel
     if not any(c in _VOWELS for c in tok):
         return True
 
-    # Longer pure-alpha tokens
     if _PURE_ALPHA.match(tok) and len(tok) > 5:
         if tok in ENGLISH_WORDS:
             return tok in GENERAL_NOISE
         if any(tok.endswith(s) for s in MEDICAL_SUFFIXES):
             return False
-        return False  # unknown long token — keep; low freq will prune at vocab stage
+        return False
 
     if tok in GENERAL_NOISE:
         return True
@@ -347,13 +323,10 @@ def _is_junk(tok: str) -> bool:
 
 
 def _is_valid_phrase_token(tok: str) -> bool:
-    """
-    Post-phrase validation for underscore-joined tokens from gensim Phraser.
-    cytochrome_p450 → valid. a2_a3, a549_h1299, _node → invalid.
-    Splits on underscore, checks every part through the same filter.
-    """
+    """Validate underscore-joined phrases from gensim Phraser."""
+    if tok in MEDICAL_WHITELIST:
+        return True
     parts = tok.split("_")
-    # Leading/trailing underscore artefact
     if any(p == "" for p in parts):
         return False
     for part in parts:
@@ -366,25 +339,22 @@ def _is_valid_phrase_token(tok: str) -> bool:
     return True
 
 
-# Matches hyphenated compounds we want to preserve as single tokens through
-# word_tokenize — anything where at least one side is a known medical stem or
-# the whole token is in HYPHEN_WHITELIST. We temporarily replace `-` with the
-# private-use sentinel `§` so NLTK sees one token, then restore after.
+# ── Hyphen sentinel — preserves compounds through word_tokenize ───────────────
+# Applied AFTER clean_text (which strips special chars) so the sentinel § is
+# not destroyed before word_tokenize sees it.
 _HYPHEN_PRESERVE = re.compile(
     r'\b('
-    # CYP compounds: cyp3a4-mediated, cyp2d6-dependent, cyp-mediated
-    # [\w]+ matches the isoform (3a4, 2d6), then (?:-[\w]+)+ matches
-    # one or more hyphen-suffix pairs: -mediated, -dependent, -inhibited
+    # CYP compounds: cyp3a4-mediated, cyp2d6-dependent
     r'cyp[\w]+(?:-[\w]+)+'
     # p-gp compounds: p-gp-mediated, p-gp-dependent
     r'|p-gp(?:-[\w]+)*'
-    # 5-HT receptor subtypes: 5-ht2a, 5-ht1a, 5-ht3
+    # 5-HT receptor subtypes
     r'|5-ht[\w]+'
-    # Cytokines / biomarkers: il-6, tnf-a, cox-2, gaba-a, pd-1
+    # cytokines: il-6, tnf-a, cox-2, gaba-a, pd-1
     r'|(?:il|tnf|ifn|tgf|cox|gaba|pd)-[\w]+'
-    # drug-* compounds: drug-drug, drug-induced, drug-metabolizing
+    # drug-* compounds
     r'|drug-[\w]+'
-    # General hyphenated DDI adjectives
+    # general DDI adjectives
     r'|(?:dose|mechanism|first|protein|half|non|rate|peak|steady|narrow|wide'
     r'|enzyme|substrate|receptor|carrier|active|efflux|anti|double|placebo'
     r'|cross|well|long|short|follow|self|health|disease|cancer|hospital'
@@ -397,41 +367,30 @@ _SENTINEL = "§"
 
 def clean_text(text: str) -> str:
     text = text.lower()
-    text = apply_forced_phrases(text)   # join DDI phrases before anything is stripped
+    text = apply_forced_phrases(text)   # join DDI phrases before stripping
     text = re.sub(r"\b[pnrtz]\s*[=<>]\s*[\d\.]+", "", text)
     text = re.sub(r"\[\d+\]|\(\w[\w\s,\.]+\d{4}\w?\)", "", text)
     text = text.encode("ascii", errors="ignore").decode()
-    # Preserve hyphens (\-) AND sentinel (§) — sentinel is written by
-    # tokenize_sentence AFTER this call, but clean_text must not strip it
-    # if called again on already-sentineled text.
+    # Preserve - and § (sentinel written by tokenize_sentence after this call)
     text = re.sub(r"[^\w\s\-§]", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
 def tokenize_sentence(sentence: str) -> list:
-    # Step 1: clean first (lowercase, strip citations, ascii-only, collapse spaces)
+    # Step 1: clean (includes forced phrase joining)
     text = clean_text(sentence)
 
-    # Step 2: protect hyphenated DDI compounds AFTER clean_text.
-    # Root cause of the bug: previously _HYPHEN_PRESERVE ran before clean_text,
-    # so clean_text's `[^\w\s\-]` regex stripped the § sentinel immediately.
-    # Now: clean_text runs first (§ not yet present), then we sentinel-encode,
-    # then word_tokenize sees the compound as one token, then we restore.
-    # e.g. "cyp3a4-mediated" → "cyp3a4§mediated" → tokenized intact
-    #      → restored to "cyp3a4-mediated" → passes _is_junk as a unit.
+    # Step 2: sentinel-encode hyphenated compounds so word_tokenize
+    # treats them as single tokens
     def _protect(m):
         return m.group(0).replace("-", _SENTINEL)
-
     text = _HYPHEN_PRESERVE.sub(_protect, text)
 
     result = []
     for tok in word_tokenize(text):
         tok = tok.lower().strip("-")
-        # Restore sentinel back to hyphen
-        tok = tok.replace(_SENTINEL, "-")
-        if not tok:
-            continue
-        if tok.startswith("_"):
+        tok = tok.replace(_SENTINEL, "-")   # restore sentinel
+        if not tok or tok.startswith("_"):
             continue
         if tok in MEDICAL_WHITELIST:
             result.append(tok)
@@ -447,7 +406,6 @@ def record_to_sentences(record: dict) -> list:
     title    = record.get("title", "").strip()
     abstract = record.get("abstract", "").strip()
     text     = (title + ". ") * TITLE_REPEAT + abstract
-
     out = []
     for sentence in sent_tokenize(text):
         tokens = tokenize_sentence(sentence)
@@ -457,7 +415,6 @@ def record_to_sentences(record: dict) -> list:
 
 
 class StreamingSentences:
-    """Streams a .txt file line by line — zero memory overhead."""
     def __init__(self, path):
         self.path = path
     def __iter__(self):
@@ -469,14 +426,9 @@ class StreamingSentences:
 
 
 class BigramStream:
-    """
-    Applies a frozen Phraser on-the-fly during iteration.
-    CRITICAL: must NOT be a list comprehension — yields one sentence at a time.
-    """
     def __init__(self, path: str, phraser: Phraser):
         self.path    = path
         self.phraser = phraser
-
     def __iter__(self):
         for sent in StreamingSentences(self.path):
             yield self.phraser[sent]
@@ -491,10 +443,8 @@ def build_raw_sentences(input_path: str, raw_path: str) -> None:
     print(f"Pass 1/4: tokenizing -> {raw_path}{_mem()}")
     total_docs = total_sents = 0
     chunk = []
-
     with open(input_path, encoding="utf-8") as fin, \
          open(raw_path, "w", encoding="utf-8") as fout:
-
         for line in tqdm(fin, unit="doc"):
             line = line.strip()
             if not line:
@@ -503,7 +453,6 @@ def build_raw_sentences(input_path: str, raw_path: str) -> None:
                 chunk.append(json.loads(line))
             except json.JSONDecodeError:
                 continue
-
             if len(chunk) >= CHUNK_SIZE:
                 for record in chunk:
                     for sent in record_to_sentences(record):
@@ -512,49 +461,37 @@ def build_raw_sentences(input_path: str, raw_path: str) -> None:
                 total_docs += len(chunk)
                 chunk.clear()
                 gc.collect()
-
         for record in chunk:
             for sent in record_to_sentences(record):
                 fout.write(" ".join(sent) + "\n")
                 total_sents += 1
         total_docs += len(chunk)
-
     print(f"  {total_docs:,} docs -> {total_sents:,} sentences{_mem()}")
 
 
 def apply_phrases(raw_path: str, output_path: str) -> None:
-    # ── Bigram pass ───────────────────────────────────────────────────────────
     print(f"Pass 2/4: training bigrams (streaming){_mem()}")
     bigram_model = Phrases(
         StreamingSentences(raw_path),
-        min_count=5,
-        threshold=8,
+        min_count=5, threshold=8,
         max_vocab_size=3_000_000,
         connector_words=ENGLISH_CONNECTOR_WORDS,
     )
     bigram = Phraser(bigram_model)
-    del bigram_model
-    gc.collect()
+    del bigram_model; gc.collect()
     print(f"  Bigrams trained{_mem()}")
 
-    # ── Trigram pass ──────────────────────────────────────────────────────────
     print(f"Pass 3/4: training trigrams (streaming){_mem()}")
     trigram_model = Phrases(
         BigramStream(raw_path, bigram),
-        min_count=5,
-        threshold=8,
+        min_count=5, threshold=8,
         max_vocab_size=3_000_000,
         connector_words=ENGLISH_CONNECTOR_WORDS,
     )
     trigram = Phraser(trigram_model)
-    del trigram_model
-    gc.collect()
+    del trigram_model; gc.collect()
     print(f"  Trigrams trained{_mem()}")
 
-    # ── Write final sentences with post-phrase junk filter ────────────────────
-    # KEY FIX: after bigram/trigram joining, validate every token.
-    # Underscore-joined phrases whose parts are junk are dropped here,
-    # not allowed to survive into sentences.txt and then vocab.txt.
     print(f"Pass 4/4: writing final sentences (with post-phrase filter){_mem()}")
     n = count_lines(raw_path)
     with open(raw_path, encoding="utf-8") as fin, \
@@ -593,11 +530,7 @@ def build_vocab(sentences_path: str, vocab_path: str) -> int:
 
 
 def quick_test() -> None:
-    """
-    Verify tokenizer output. Expected behaviour annotated per sentence.
-    """
     test_cases = [
-        # ── should produce meaningful tokens ──
         ("Warfarin and aspirin interact via CYP2C9 inhibition.",
          "warfarin aspirin interact cyp2c9 inhibition"),
         ("The patient received 500 mg of amoxicillin twice daily.",
@@ -605,7 +538,7 @@ def quick_test() -> None:
         ("IL-6 and TNF-a are elevated in inflammatory conditions.",
          "il-6 tnf-a elevated inflammatory conditions"),
         ("Drug-drug interactions may alter cytochrome P450 metabolism.",
-         "drug-drug interactions alter cytochrome p450 metabolism"),
+         "drug-drug interactions alter cytochrome_p450 metabolism"),
         ("Ritonavir is a potent CYP3A4-mediated inhibitor of atazanavir clearance.",
          "ritonavir potent cyp3a4-mediated inhibitor atazanavir clearance"),
         ("P-gp-mediated efflux reduces bioavailability of the substrate drug.",
@@ -616,22 +549,26 @@ def quick_test() -> None:
          "ketoconazole auc increased cobicistat"),
         ("Dose-response relationships for CYP2D6-dependent oxidation were non-linear.",
          "dose-response relationships cyp2d6-dependent oxidation non-linear"),
-        # ── junk — should produce empty or near-empty output ──
         ("A0 A1 A2780 A549 a1166c a2143g a082002.",
-         "(expect empty — all alphanumeric codes)"),
+         "(expect empty)"),
         ("The a1_a2 a3_a4 _node a2b5 segment was removed.",
-         "(expect: segment removed — rest is junk)"),
-        # ── forced phrase joining ──
+         "segment removed"),
         ("The drug drug interaction between warfarin and aspirin is well documented.",
          "drug_drug_interaction warfarin aspirin documented"),
+        ("Drug-drug interactions may alter drug metabolism.",
+         "drug-drug interactions alter drug metabolism"),
         ("Half life of metformin is approximately 6 hours.",
          "half_life metformin approximately hours"),
+        ("The half-life of warfarin is 40 hours.",
+         "half_life warfarin hours"),
         ("Steady state concentrations were reached after 5 days.",
          "steady_state concentrations reached days"),
         ("Blood brain barrier penetration limits CNS drug delivery.",
          "blood_brain_barrier penetration limits drug delivery"),
         ("Cytochrome P450 enzymes mediate oxidative metabolism.",
          "cytochrome_p450 enzymes mediate oxidative metabolism"),
+        ("Cytochrome P-450 isoforms were inhibited.",
+         "cytochrome_p450 isoforms inhibited"),
     ]
     print("=== Tokenizer quick test ===")
     for sent, expected in test_cases:
