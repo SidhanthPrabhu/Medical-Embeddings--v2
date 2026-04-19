@@ -74,7 +74,7 @@ VOCAB_FILE      = "data/vocab_clean.txt"   # set to None to skip vocab filter
 MODEL_DIR       = "models"
 OUTPUT_DIR      = "outputs"
 
-VECTOR_SIZE  = 200      # Use Linear(200,128) projection before cross-attention
+VECTOR_SIZE  = 128      # Use Linear(200,128) projection before cross-attention
                         # to match Node2Vec d=128 rather than constraining here.
 WINDOW       = 8
 MIN_COUNT    = 10       # Second gate after vocab_clean filtering. Raises from 5
@@ -148,23 +148,10 @@ class CorpusReader:
 
     def __len__(self) -> int:
         if self._len is None:
-            # Count only lines that __iter__ would actually yield —
-            # i.e. non-empty after vocab filtering. This eliminates the
-            # "supplied example count did not equal expected count" warning
-            # which caused Gensim's LR schedule to decay incorrectly.
-            count = 0
-            vs = self.vocab_set
+            # Count only non-empty lines — must match what __iter__ yields
+            # exactly, or Gensim logs "supplied count != expected count" every epoch
             with open(self.path, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    tokens = line.split()
-                    if vs is not None:
-                        tokens = [t for t in tokens if t in vs]
-                    if tokens:
-                        count += 1
-            self._len = count
+                self._len = sum(1 for line in f if line.strip())
         return self._len
 
 
@@ -230,16 +217,19 @@ def train_model(sentences_path: str, vocab_path: str | None) -> Word2Vec:
 
     logger = EpochLogger(EPOCHS)
 
+    # Use model.corpus_count (set by build_vocab) not n_sents (from __len__)
+    # These can diverge if sentences.txt has blank lines — using corpus_count
+    # eliminates the "supplied count != expected count" WARNING every epoch.
     model.train(
         corpus,
-        total_examples = n_sents,       # avoids a re-scan for progress tracking
+        total_examples = model.corpus_count,
         epochs         = EPOCHS,
         compute_loss   = True,
         callbacks      = [logger],
     )
 
-    # NOTE: do NOT delete syn1neg here — model.save() needs it intact.
-    # It is deleted inside save_outputs() after both files are written.
+    # syn1neg is deleted in save_outputs() AFTER model.save() completes.
+    # Deleting it here causes model.save() to write an empty shell (3.4 MB).
 
     return model
 
@@ -355,19 +345,18 @@ def save_outputs(model: Word2Vec, report: str) -> None:
     kv_path     = Path(MODEL_DIR) / "medical_word2vec.kv"
     report_path = Path(OUTPUT_DIR) / "embedding_eval.txt"
 
-    # Save full model FIRST — model.save() needs syn1neg intact.
-    # Saving before deletion is the fix for the 3.4 MB file size bug:
-    # previously syn1neg was deleted in train_model() before save_outputs()
-    # ran, so model.save() wrote a shell with no weight matrices.
+    # Save full model FIRST — syn1neg must be present for model.save()
+    # to write the complete weight matrices. Deleting it before this call
+    # is what caused the 3.4 MB file bug.
     model.save(str(model_path))
 
-    # Save KeyedVectors — this is what downstream DDI code loads.
-    # Does not require syn1neg.
+    # Save KeyedVectors — downstream DDI code only needs this file.
     model.wv.save(str(kv_path))
 
     report_path.write_text(report, encoding="utf-8")
 
-    # NOW free syn1neg — both files are safely written.
+    # NOW delete syn1neg — both files are safely written.
+    # Frees ~64 MB (82k vocab × 200 dim × 4 bytes).
     if hasattr(model, "syn1neg"):
         del model.syn1neg
         gc.collect()
@@ -380,8 +369,8 @@ def save_outputs(model: Word2Vec, report: str) -> None:
     print(f"\nSaved outputs:")
     for name, size in sizes.items():
         print(f"  {name:<40} {size}")
+    print(f"  Expected: model ~130 MB, kv ~65 MB")
     print(f"\n  → Use '{kv_path}' for downstream DDI modelling.")
-    print(f"  Expected sizes: model ~130 MB, kv ~65 MB")
 
 
 if __name__ == "__main__":
